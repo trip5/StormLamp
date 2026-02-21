@@ -132,7 +132,7 @@ Any components in the diagram not directly attached to the ESP32-S2 board are ac
 
 ## ESPHome YAML
 
-The file [`stormclock.yaml`](stormclock.yaml) has a lot of notes if you want to make changes.
+The file [`stormlamp.yaml`](stormlamp.yaml) has a lot of notes if you want to make changes.
 
 The WebUI includes the ability to set the lamp to turn on when power is lost and turn off again when power is restored.  These options are on by default.
 
@@ -144,24 +144,11 @@ If the battery is absent or too low, the ESP could enter brownout reboots and th
 
 Most importantly, the lamp will still be operable even when the ESP is asleep.  If you need to wake the ESP again, you can use the reset button.
 
-### ESPHome ADC Warning
-
-During building, you may see this warning.  It's safe to ignore for now.
-
-```
-In file included from src/esphome/components/adc/adc_sensor.h:9,
-                 from src/esphome/components/adc/adc_sensor_common.cpp:1:
-/config/.esphome/platformio/packages/framework-arduinoespressif32-libs/esp32s2/include/esp_adc/deprecated/include/esp_adc_cal.h:17:2:
-warning: #warning "legacy adc calibration driver is deprecated, please migrate to use esp_adc/adc_cali.h and esp_adc/adc_cali_scheme.h" [-Wcpp]
-   17 | #warning "legacy adc calibration driver is deprecated, please migrate to use esp_adc/adc_cali.h and esp_adc/adc_cali_scheme.h"
-      |  ^~~~~~~
-```
-It's because ESPHome relies on some older code in ESP-IDF.  It's safe to ignore for now.
-
 ---
 
 ## Update History
 
-| Date       | Release Notes    |
-| ---------- | ---------------- |
-| 2025.07.31 | First release    |
+| Date       | Release Notes             |
+| ---------- | ------------------------- |
+| 2026.02.21 | yaml: kludge for UPS output / battery charging, LED breathing tweaks |
+| 2025.07.31 | First release             |

@@ -1,17 +1,17 @@
 # My github: https://github.com/trip5
 
 substitutions:
-  name: stormlamp
-  friendly_name: StormLamp
-  project_name: "Trip5.StormLamp"
+  name: "stormlamp"
+  friendly_name: "StormLamp"
   comment: "StormLamp from Trip5"
-  project_version: "2025.07.31"
+  project_name: "Trip5.StormLamp"
+  project_version: "2026.02.21"
   status_led_pin: GPIO10 # used to show status
   # 1N5819 Schottky diode prevents power surge on USB port: DC V input ─▶|─> 1Ω -> UPS V input
   # All ADC Pins: Source -> 100KΩ resistor -> ADC Pin -> 100KΩ resistor -> GND
   #                                           ADC Pin -> 100nF capacitor -> GND
   adc_power_in_pin: GPIO1 # measures power input (on 5V / USB line)
-  adc_ups_active_pin: GPIO2 # measures if charging is active (attached to CR LED on back of 5V UPS)
+  adc_ups_active_pin: GPIO2 # measures if charging is active (attached to CR LED on back of 5V UPS) * see note at end of substitutions
   adc_battery_pin: GPIO4 # measures battery power
   adc_light_on_pin: GPIO6 # measures power output (attached to latch V output)
   adc_light_out_pin: GPIO8 # measures light output (attached to LDO LED output)
@@ -29,18 +29,28 @@ substitutions:
   turn_on_when_power_lost: "RESTORE_DEFAULT_ON"
   turn_off_when_power_restored: "RESTORE_DEFAULT_ON"
   # Since mDNS will not function correctly, enter an IP Address here if you need to update it OTA (is NOT used for static IP, only for OTA)
-  ip_address: 192.168.23.164
+  ip_address: "192.168.23.30"
+
+  # Note regarding ups_Active_pin:
+  # This was meant to monitor charging is active but my UPS stays active due to the ESP's load so there is a check if the battery stops rising in voltage for 10 minutes
+  # If your UPS uses it's LED to register charging status then in the serial log, you will see: "UPS Pulse Detected: false" repeated
+  # Then search for (and delete as appropriate):
+  # --- If UPS sensor works: delete ...
+
 
 esphome:
-  name: ${name}
+  name: "${name}"
+  friendly_name: "${friendly_name}"
   comment: "${comment}"
   project:
     name: "${project_name}"
     version: "${project_version}"
   on_boot:
-      - priority: -100.0
+      - priority: 600.0
         then:
           - wifi.disable
+      - priority: 300.0
+        then:
           - light.turn_on:
               id: led1
               transition_length: 0s
@@ -64,7 +74,7 @@ ota:
     password: !secret ota_password
 
 wifi:
-  enable_on_boot: False # Keep it off at boot
+  enable_on_boot: false # Keep it off at boot
   use_address: ${ip_address}
   networks:
     - ssid: !secret wifi_ssid
@@ -78,8 +88,8 @@ mdns:
 
 web_server:
   port: 80
-  # ota: False # if you want to disable it (True is no longer valid)
-  # include_internal: True # probably not necessary, as it will expose more than needed to the Web UI
+  # ota: false # if you want to disable it (true is no longer valid)
+  # include_internal: true # probably not necessary, as it will expose more than needed to the Web UI
 
 captive_portal:
 
@@ -93,8 +103,7 @@ logger:
     text_sensor: ERROR
     binary_sensor: ERROR
 
-# Enable Home Assistant API
-# Due to Wi-fi being disabled at boot (so mDNS fails), you will have to add it to HA by IP address
+# Enable Home Assistant API: sue to Wi-fi being disabled at boot (so mDNS fails), you will have to add it to HA by IP address
 api:
   # delete next 2 lines if not using HA API encryption
   encryption:
@@ -110,6 +119,15 @@ globals:
     type: int
     restore_value: no
     initial_value: '0'
+    # --- If UPS sensor works: delete next 8 lines
+  - id: battery_v_high_time
+    type: long
+    restore_value: no
+    initial_value: '0'
+  - id: battery_v_high
+    type: float
+    restore_value: no
+    initial_value: '3'
   - id: turned_on_by_power_loss
     type: bool
     restore_value: yes
@@ -135,7 +153,6 @@ globals:
     restore_value: yes
     initial_value: '3600' # 1 hour in seconds (will be updated by the number component)
 
-
 script:
   - id: led_breathe
     # This will make a breathing effect on the status LED
@@ -145,9 +162,13 @@ script:
           id: led_breathe_script_running
           value: 'true'
       - delay: 2s
-      - light.turn_on: led1
+      - light.turn_on:
+          id: led1
+          transition_length: 1000ms
       - delay: 1s
-      - light.turn_off: led1
+      - light.turn_off:
+          id: led1
+          transition_length: 1000ms
       - delay: 2s
       - script.execute: led_breathe
 # The next few blocks are utilized to update the diagnostic sensors (quickly)
@@ -168,18 +189,17 @@ script:
     then:
       - lambda: 'id(ups_active_pulse_check) = false;'
       - repeat:
-          count: 20
+          count: 200
           then:
             - component.update: ups_active_adc
             - lambda: |-
                 if (id(ups_active_adc).state > 0.05) {
                   id(ups_active_pulse_check) = true;
                 }
-            - delay: 50ms
+            - delay: 10ms # go as low as 5ms?
       - lambda: |-
           id(ups_active_pulse) = id(ups_active_pulse_check);
-          ESP_LOGI("custom", "UPS Pulse Detected: %s", id(ups_active_pulse) ? "True" : "False");
-
+          ESP_LOGI("custom", "UPS Pulse Detected: %s", id(ups_active_pulse) ? "true" : "false");
   - id: update_battery_adc
     mode: single
     then:
@@ -232,17 +252,39 @@ script:
                 id: deep_sleep_control
                 sleep_duration: !lambda 'return id(sleep_duration_seconds) * 1000;'
       - wifi.enable
+      - component.update: uptime_sensor
+      - component.update: battery_percentage
       - script.execute: update_ups_active_adc
       - script.execute: update_light_out_adc
       - script.execute: check_turn_off_when_power_restored
       - delay: 2s
       - component.update: wifisignal
+      # --- If UPS sensor works: delete next 20 lines
+      # record the battery high point and when (seconds after boot) it occurs (but only if it's 0.01V higher)
+      - if:
+          condition:
+            - lambda: "return (id(battery_adc).state - id(battery_v_high)) > 0.01;"
+          then:
+            - globals.set:
+                id: battery_v_high
+                value: !lambda 'return id(battery_adc).state;'
+            - globals.set:
+                id: battery_v_high_time
+                value: !lambda 'return id(uptime_sensor).state;'
+          else:
+            # Plateau detected (voltage stable for 10min in battery_charging binary sensor) - lock it in with +0.5V to prevent re-triggering, regardless of UPS state
+            - if:
+                condition:
+                  - binary_sensor.is_off: battery_charging
+                then:
+                  - globals.set:
+                      id: battery_v_high
+                      value: !lambda 'return id(battery_adc).state + 0.5;'
       - if:
           condition:
               and:
+                - binary_sensor.is_on: battery_charging # --- If UPS sensor works: delete this line
                 - binary_sensor.is_on: ups_active
-                - lambda: 'return (id(battery_adc).state < 4.15);' # Because the UPS will continue to be "active" due to the ESP's load
-                # If a UPS is ONLY active during actual charging, comment-out the above line
           then:
             - if:
                 condition:
@@ -250,6 +292,9 @@ script:
                     script.is_running: led_breathe
                 then:
                   - script.execute: led_breathe
+            # --- If UPS sensor works: delete next 2 lines
+            - lambda: |-
+                ESP_LOGD("custom", "Battery Charging | High State: %.2fV | Seconds Since High: %.0fs", id(battery_v_high), id(uptime_sensor).state - id(battery_v_high_time));
           else:
             - script.stop: led_breathe
             - globals.set:
@@ -314,79 +359,95 @@ script:
 
 sensor:  
   - platform: wifi_signal
-    name: "${friendly_name} WiFi Signal Strength"
+    name: "WiFi Signal Strength"
     id: wifisignal
-    update_interval: never
+    update_interval: 30s
     unit_of_measurement: "dBm"
     entity_category: "diagnostic"
+    icon: mdi:wifi
+    disabled_by_default: true
+  - platform: uptime
+    name: "Uptime Sensor"
+    id: uptime_sensor
+    type: seconds
+    internal: true
   - platform: adc
-    name: "${friendly_name} Power In"
+    name: "Power In"
     id: power_in_adc
     update_interval: never
     pin: ${adc_power_in_pin}
     attenuation: 12db
     entity_category: "diagnostic"
     accuracy_decimals: 2
-    device_class: battery
+    device_class: power
     unit_of_measurement: "V"
-    internal: True
+    internal: true
     filters:
       - multiply: 2
       - sliding_window_moving_average:
           window_size: 3
           send_every: 1
   - platform: adc
-    name: "${friendly_name} UPS Active V"
+    name: "UPS Active V"
     id: ups_active_adc
     update_interval: never
     pin: ${adc_ups_active_pin}
     attenuation: 12db
-    entity_category: "diagnostic"
     accuracy_decimals: 4
-    device_class: battery
     unit_of_measurement: "V"
-    internal: True
+    internal: true
     filters:
       - multiply: 2
   - platform: adc
-    name: "${friendly_name} Battery"
+    name: "Battery"
     id: battery_adc
     update_interval: never
     pin: ${adc_battery_pin}
     attenuation: 12db
     entity_category: "diagnostic"
     accuracy_decimals: 2
-    device_class: battery
     unit_of_measurement: "V"
+    internal: true
     filters:
       - multiply: 2
       - sliding_window_moving_average:
           window_size: 3
           send_every: 1
+  - platform: template
+    name: "Battery %"
+    id: battery_percentage
+    unit_of_measurement: "%"
+    device_class: battery
+    update_interval: never
+    # battery > 4.17V considered 100%
+    lambda: |- 
+      return (id(battery_adc).state - 3.5) / 0.66 * 100;
+    filters:
+      - lambda: |- 
+          if (x < 0) return 0;
+          else if (x > 100) return 100;
+          else return x;
   - platform: adc
-    name: "${friendly_name} Light On"
+    name: "Light On"
     id: light_on_adc
     update_interval: never
     pin: ${adc_light_on_pin}
     attenuation: 12db
-    entity_category: "diagnostic"
     accuracy_decimals: 2
-    device_class: battery
     unit_of_measurement: "V"
-    internal: True
+    internal: true
     filters:
       - multiply: 2
   - platform: adc
-    name: "${friendly_name} Light Out"
+    name: "Light Out"
     id: light_out_adc
     update_interval: never
     pin: ${adc_light_out_pin}
     attenuation: 12db
     entity_category: "diagnostic"
     accuracy_decimals: 2
-    device_class: battery
     unit_of_measurement: "V"
-    internal: True
+    internal: true
     filters:
       - multiply: 2
       - sliding_window_moving_average:
@@ -395,30 +456,33 @@ sensor:
 
 switch:
   - platform: template
-    name: "${friendly_name} Turn On Light When Power Lost"
+    name: "Turn On Light When Power Lost"
     id: turn_on_when_power_lost
     restore_mode: ${turn_on_when_power_lost}
-    optimistic: True
+    optimistic: true
     device_class: switch
+    icon: mdi:lightbulb-on
     turn_on_action:
         - logger.log: "Turn On Light When Power Lost On"
     turn_off_action:
         - logger.log: "Turn On Light When Power Lost Off"
   - platform: template
-    name: "${friendly_name} Turn Off Light When Power Restored"
+    name: "Turn Off Light When Power Restored"
     id: turn_off_when_power_restored
     restore_mode: ${turn_off_when_power_restored}
-    optimistic: True
+    optimistic: true
     device_class: switch
+    icon: mdi:lightbulb-off
     turn_on_action:
         - logger.log: "Turn Off Light When Power Restored On"
     turn_off_action:
         - logger.log: "Turn Off Light When Power Restored Off"
   - platform: template
-    name: "${friendly_name} Light"
+    name: "Light"
     id: light_switch
     restore_mode: DISABLED
     device_class: switch
+    icon: mdi:lightbulb
     lambda: |-
       return (id(light_on_adc).state > 2);
     turn_on_action:
@@ -428,9 +492,9 @@ switch:
 
 button:
   - platform: template
-    name: "${friendly_name} Light Toggle"
+    name: "Light Toggle"
     id: light_toggle
-    internal: True
+    internal: true
     on_press:
       then:
         - output.turn_on: latch_trigger
@@ -456,22 +520,32 @@ light:
     id: led1
     name: "LED"
     output: statusled
-    internal: True
+    internal: true
 
 binary_sensor:
   - platform: template
-    name: "${friendly_name} UPS Active"
+    name: "UPS Active"
     id: ups_active
     device_class: power
     lambda: 'return id(ups_active_pulse);'
+    icon: mdi:lightning-bolt
+    disabled_by_default: true
+    # --- If UPS sensor works: delete next 7 lines
+  - platform: template
+    name: "Battery Charging"
+    id: battery_charging
+    device_class: power
+    # Here's where the 10 minutes plateau for measured voltage is checked
+    lambda: 'return id(uptime_sensor).state <= (id(battery_v_high_time) + 600);'
+    icon: mdi:battery-charging
   - platform: gpio
-    name: "${friendly_name} Input Button"
+    name: "Input Button"
     id: input_button
     pin:
       number: ${input_button_pin}
       mode: INPUT_PULLUP
       inverted: true
-    internal: True
+    internal: true
     on_press:
         then:
           - if:
@@ -482,44 +556,38 @@ binary_sensor:
                 - light.turn_off:
                     id: led1
                     transition_length: 0ms
-                - delay: 100ms
+                - delay: 50ms
           - light.turn_on:
               id: led1
-              transition_length: 0ms
+              transition_length: 0s
     on_release:
           - light.turn_off:
               id: led1
-              transition_length: 0ms
+              transition_length: 500ms
+          - delay: 500ms
           - if:
               condition:
                 lambda: 'return id(led_breathe_script_running);'
               then:
                 script.execute: led_breathe
 
-
 text_sensor:
-  - platform: version
-    name: "${friendly_name} ESPHome Version"
-    id: esphome_version
-    hide_timestamp: True
-    entity_category: diagnostic
   - platform: wifi_info
     ip_address:
       id: wifi_ip
-      name: "${friendly_name} IP Address"
+      name: "IP Address"
       entity_category: diagnostic
-    ssid:
-      id: wifi_ssid
-      name: "${friendly_name} SSID"
-      entity_category: diagnostic
+      icon: mdi:network
+      disabled_by_default: true
   - platform: template
-    name: "${friendly_name} ${project_name} Version"
     id: project_version
-    lambda: |-
-      return {"${project_version}"};
+    name: "${project_name} Version"
+    lambda: 'return {"${project_version}"};'
     entity_category: diagnostic
+    icon: mdi:github
+    disabled_by_default: true
   - platform: template
-    name: "${friendly_name} Wake Reason"
+    name: "Wake Reason"
     id: wake_reason
     lambda: |-
       switch (id(wakeup_reason)) {
@@ -533,10 +601,12 @@ text_sensor:
       }
     update_interval: never
     entity_category: diagnostic
+    icon: mdi:power-cycle
+    disabled_by_default: true
 
 number:
   - platform: template
-    name: "${friendly_name} Sleep Duration"
+    name: "Sleep Duration"
     id: sleep_duration
     optimistic: true
     min_value: 10
