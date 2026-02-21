@@ -272,7 +272,6 @@ script:
             - globals.set:
                 id: battery_v_high_time
                 value: !lambda 'return id(uptime_sensor).state;'
-          # --- If UPS sensor works: delete next 9 lines
           else:
             # Plateau detected (voltage stable for 10min in battery_charging binary sensor) - lock it in with +0.5V to prevent re-triggering, regardless of UPS state
             - if:
