@@ -296,7 +296,6 @@ script:
           else:
             - lambda: |-
                 ESP_LOGD("custom", "Battery Charging | High State: %.2fV | Seconds Since High: %.0fs", id(battery_v_high), id(uptime_sensor).state - id(battery_v_high_time));
-
       - lambda: |-
           id(turned_on_by_power_loss) = false;
           id(power_in_adc_finished) = false;
