@@ -58,6 +58,7 @@ esphome:
           - component.update: wake_reason
           - script.execute: check_wakeup_reason
           - script.execute: initialize_sleep_duration
+          - script.execute: led_breathe
           - script.execute: check_status_loop
 
 esp32:
@@ -271,6 +272,7 @@ script:
             - globals.set:
                 id: battery_v_high_time
                 value: !lambda 'return id(uptime_sensor).state;'
+          # --- If UPS sensor works: delete next 9 lines
           else:
             # Plateau detected (voltage stable for 10min in battery_charging binary sensor) - lock it in with +0.5V to prevent re-triggering, regardless of UPS state
             - if:
@@ -283,24 +285,19 @@ script:
       - if:
           condition:
               and:
-                - binary_sensor.is_on: battery_charging # --- If UPS sensor works: delete this line
-                - binary_sensor.is_on: ups_active
+                - binary_sensor.is_off: battery_charging # --- If UPS sensor works: delete this line
+                - binary_sensor.is_off: ups_active
           then:
-            - if:
-                condition:
-                  not:
-                    script.is_running: led_breathe
-                then:
-                  - script.execute: led_breathe
-            # --- If UPS sensor works: delete next 2 lines
-            - lambda: |-
-                ESP_LOGD("custom", "Battery Charging | High State: %.2fV | Seconds Since High: %.0fs", id(battery_v_high), id(uptime_sensor).state - id(battery_v_high_time));
-          else:
             - script.stop: led_breathe
             - globals.set:
                 id: led_breathe_script_running
                 value: 'false'
             - light.turn_off: led1
+          # --- If UPS sensor works: delete next 3 lines
+          else:
+            - lambda: |-
+                ESP_LOGD("custom", "Battery Charging | High State: %.2fV | Seconds Since High: %.0fs", id(battery_v_high), id(uptime_sensor).state - id(battery_v_high_time));
+
       - lambda: |-
           id(turned_on_by_power_loss) = false;
           id(power_in_adc_finished) = false;
