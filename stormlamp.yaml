@@ -5,7 +5,7 @@ substitutions:
   friendly_name: "StormLamp"
   comment: "StormLamp from Trip5"
   project_name: "Trip5.StormLamp"
-  project_version: "2026.02.21"
+  project_version: "2026.02.22"
   status_led_pin: GPIO10 # used to show status
   # 1N5819 Schottky diode prevents power surge on USB port: DC V input ─▶|─> 1Ω -> UPS V input
   # All ADC Pins: Source -> 100KΩ resistor -> ADC Pin -> 100KΩ resistor -> GND
@@ -31,11 +31,13 @@ substitutions:
   # Since mDNS will not function correctly, enter an IP Address here if you need to update it OTA (is NOT used for static IP, only for OTA)
   ip_address: "192.168.23.30"
 
-  # Note regarding ups_Active_pin:
-  # This was meant to monitor charging is active but my UPS stays active due to the ESP's load so there is a check if the battery stops rising in voltage for 10 minutes
-  # If your UPS uses it's LED to register charging status then in the serial log, you will see: "UPS Pulse Detected: false" repeated
-  # Then search for (and delete as appropriate):
+  # Note regarding ups_active_pin:
+  # This was meant to monitor if charging is active but it unfortunately is always active, probably due to the ESP's load so instead there is a
+  # kludge that checks if the battery's charged voltage stops rising for 10 minutes - it's a pretty good fix but not what was intended
+  # If your UPS uses it's LED to register charging status then in the serial log, you will see: "UPS Pulse Detected: false" repeated (When the battery is at full charge)
+  # You can leave it as is and use the ups_active_pin but the kludge will act as a backup.  Or you could search for (and delete as appropriate):
   # --- If UPS sensor works: delete ...
+  # Anyway all this actually does is control the LED because both sensors above report to the UI and Home Assistant anyways.
 
 
 esphome:
@@ -46,20 +48,14 @@ esphome:
     name: "${project_name}"
     version: "${project_version}"
   on_boot:
-      - priority: 600.0
+      - priority: -100.0
         then:
-          - wifi.disable
-      - priority: 300.0
-        then:
-          - light.turn_on:
-              id: led1
-              transition_length: 0s
           - lambda: 'id(wakeup_reason) = esp_sleep_get_wakeup_cause();' # determines reason for waking up: 3 = Timer
           - component.update: wake_reason
           - script.execute: check_wakeup_reason
           - script.execute: initialize_sleep_duration
           - script.execute: led_breathe
-          - script.execute: check_status_loop
+          - script.execute: sensors_and_actions
 
 esp32:
   board: lolin_s2_mini
@@ -70,12 +66,8 @@ esp32:
 preferences:
   flash_write_interval: 5s # default is 1min
 
-ota:
-  - platform: esphome
-    password: !secret ota_password
-
 wifi:
-  enable_on_boot: false # Keep it off at boot
+  enable_on_boot: false
   use_address: ${ip_address}
   networks:
     - ssid: !secret wifi_ssid
@@ -91,6 +83,31 @@ web_server:
   port: 80
   # ota: false # if you want to disable it (true is no longer valid)
   # include_internal: true # probably not necessary, as it will expose more than needed to the Web UI
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+    on_begin:
+      then:
+        - lambda: 'id(statusled)->set_level(0.0);'
+        - logger.log: "OTA Update started."
+    on_progress:
+      then:
+        - lambda: 'id(statusled)->set_level(x / 100.0);'
+        - logger.log:
+            format: "OTA progress %0.1f%%"
+            args: ["x"]
+    on_end:
+      then:
+        - lambda: 'id(statusled)->set_level(1.0);'
+        - logger.log: "OTA done"
+    on_error:
+      then:
+        - lambda: 'id(statusled)->set_level(0.0);'
+        - logger.log: "OTA error"
+
+safe_mode:
+  disabled: true   
 
 captive_portal:
 
@@ -120,6 +137,10 @@ globals:
     type: int
     restore_value: no
     initial_value: '0'
+  - id: first_boot_led
+    type: bool
+    restore_value: no
+    initial_value: 'true'
     # --- If UPS sensor works: delete next 8 lines
   - id: battery_v_high_time
     type: long
@@ -133,7 +154,7 @@ globals:
     type: bool
     restore_value: yes
     initial_value: 'false'
-  - id: led_breathe_script_running
+  - id: led_breathing
     type: bool
     restore_value: no
     initial_value: 'false'
@@ -159,18 +180,26 @@ script:
     # This will make a breathing effect on the status LED
     mode: restart
     then:
-      - globals.set:
-          id: led_breathe_script_running
-          value: 'true'
-      - delay: 2s
-      - light.turn_on:
-          id: led1
-          transition_length: 1000ms
-      - delay: 1s
+      - if:
+          condition:
+            - lambda: 'return id(first_boot_led);'
+          then:
+            - light.turn_on:
+                id: led1
+                transition_length: 0ms
+            - lambda: 'id(first_boot_led) = false;'
+          else:
+            - light.turn_on:
+                id: led1
+                transition_length: 1000ms
+      - delay: 1000ms
       - light.turn_off:
           id: led1
           transition_length: 1000ms
-      - delay: 2s
+      - globals.set:
+          id: led_breathing
+          value: 'true'
+      - delay: 4s
       - script.execute: led_breathe
 # The next few blocks are utilized to update the diagnostic sensors (quickly)
   - id: update_power_in_adc
@@ -221,8 +250,8 @@ script:
             - delay: 250ms
       - lambda: |-
           ESP_LOGI("custom", "Light Out: %.2f V", id(light_out_adc).state);
-# Here's the main loop
-  - id: check_status_loop
+# Here's the main script which checks the sensors and performs actions
+  - id: sensors_and_actions
     mode: restart
     then:
       - component.update: light_on_adc
@@ -281,38 +310,49 @@ script:
                   - globals.set:
                       id: battery_v_high
                       value: !lambda 'return id(battery_adc).state + 0.5;'
+      - script.execute: wait_until_15_second_mark_loop
+# main loop used to start the secondary loop :00, :15, :30, :45 seconds after boot
+  - id: wait_until_15_second_mark_loop
+    mode: restart
+    then:
       - if:
           condition:
-              and:
+            - lambda: 'return ((millis() / 1000) % 15 == 0);'
+          then:
+            - script.execute: battery_charging_update
+            - script.execute: sensors_and_actions
+          else:
+            - delay: 1s
+            - script.execute: wait_until_15_second_mark_loop
+# separated from main loop because it shouldn't run during first boot (some sensors not available)
+  - id: battery_charging_update
+    mode: restart
+    then:
+      - if:
+          condition:
+              or:
                 - binary_sensor.is_off: battery_charging # --- If UPS sensor works: delete this line
                 - binary_sensor.is_off: ups_active
           then:
             - script.stop: led_breathe
             - globals.set:
-                id: led_breathe_script_running
+                id: led_breathing
                 value: 'false'
             - light.turn_off: led1
-          # --- If UPS sensor works: delete next 3 lines
           else:
+            - if:
+                condition:
+                  - lambda: 'return !id(led_breathing);'
+                then:
+                  - script.execute: led_breathe
+            # --- If UPS sensor works: delete next 2 lines
             - lambda: |-
                 ESP_LOGD("custom", "Battery Charging | High State: %.2fV | Seconds Since High: %.0fs", id(battery_v_high), id(uptime_sensor).state - id(battery_v_high_time));
       - lambda: |-
           id(turned_on_by_power_loss) = false;
           id(power_in_adc_finished) = false;
           id(wakeup_reason) = 3;
-      - script.execute: wait_until_15_second_mark
-  - id: wait_until_15_second_mark  # runs at :00, :15, :30, :45 seconds after boot
-    mode: restart
-    then:
-      - if:
-          condition:
-            lambda: 'return ((millis() / 1000) % 15 == 0);'
-          then:
-            - script.execute: check_status_loop
-          else:
-            - delay: 1s
-            - script.execute: wait_until_15_second_mark
-# These scripts are what makes it smart, otherwise, you don't really need an ESP!
+# These next scripts are what makes it smart, otherwise, you don't really need an ESP! (Up to this point we're just monitoring and doing fun stuff with the LED)
   - id: check_wakeup_reason
     mode: single
     then:
@@ -478,8 +518,7 @@ switch:
     restore_mode: DISABLED
     device_class: switch
     icon: mdi:lightbulb
-    lambda: |-
-      return (id(light_on_adc).state > 2);
+    lambda: 'return (id(light_on_adc).state > 2);'
     turn_on_action:
       - button.press: light_toggle
     turn_off_action:
@@ -545,13 +584,13 @@ binary_sensor:
         then:
           - if:
               condition:
-                script.is_running: led_breathe
+                - lambda: 'return id(led_breathing);'
               then:
                 - script.stop: led_breathe
                 - light.turn_off:
                     id: led1
                     transition_length: 0ms
-                - delay: 50ms
+                - delay: 0ms
           - light.turn_on:
               id: led1
               transition_length: 0s
@@ -559,12 +598,12 @@ binary_sensor:
           - light.turn_off:
               id: led1
               transition_length: 500ms
-          - delay: 500ms
+          - delay: 2500ms
           - if:
               condition:
-                lambda: 'return id(led_breathe_script_running);'
+                - lambda: 'return id(led_breathing);'
               then:
-                script.execute: led_breathe
+                - script.execute: led_breathe
 
 text_sensor:
   - platform: wifi_info

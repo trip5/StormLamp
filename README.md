@@ -3,6 +3,7 @@
 The StormLamp uses a 5V UPS circuit, power latch module, and an LDO module to make a dimmable, power-efficient lamp that can be used as an emergency light source during a power blackout.
 
 It's primarily a hardware project.  Making it smart with an ESP32-S2 and ESPHome is optional but adds some pretty useful features, like automatically turning on for a blackout and off again when the blackout is over.
+It also makes the LED show charging status.
 
 ![image](./images/stormlamp.jpg)
 
@@ -150,5 +151,5 @@ Most importantly, the lamp will still be operable even when the ESP is asleep.  
 
 | Date       | Release Notes             |
 | ---------- | ------------------------- |
-| 2026.02.21 | yaml: kludge for UPS output / battery charging, LED breathing tweaks |
+| 2026.02.22 | yaml: UPS output / battery charging, LED tweaks |
 | 2025.07.31 | First release             |
