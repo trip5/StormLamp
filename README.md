@@ -151,5 +151,5 @@ Most importantly, the lamp will still be operable even when the ESP is asleep.  
 
 | Date       | Release Notes             |
 | ---------- | ------------------------- |
-| 2026.02.22 | yaml: UPS output / battery charging, LED tweaks |
+| 2026.02.22 | yaml: UPS output / battery charging kludge, LED tweaks |
 | 2025.07.31 | First release             |
